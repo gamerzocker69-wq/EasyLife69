@@ -369,22 +369,25 @@ def weekly_recap(message):
 # ─────────────────────────────────────────────
 @bot.message_handler(commands=['connectgmail'])
 def connect_gmail(message):
-    uid = message.from_user.id
-    flow = make_flow()
-    auth_url, state = flow.authorization_url(
-        access_type='offline',
-        include_granted_scopes='true',
-        prompt='consent'
-    )
-    pending_oauth[state] = uid
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🔗 Connecter mon Gmail", url=auth_url))
-    bot.reply_to(
-        message,
-        "Clique sur le bouton pour connecter ton Gmail ✅\n_Une fois autorisé, reviens ici !_",
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
+    try:
+        uid = message.from_user.id
+        flow = make_flow()
+        auth_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent'
+        )
+        pending_oauth[state] = uid
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔗 Connecter mon Gmail", url=auth_url))
+        bot.reply_to(
+            message,
+            "Clique sur le bouton pour connecter ton Gmail ✅\n_Une fois autorisé, reviens ici !_",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+    except Exception as e:
+        bot.reply_to(message, f"❌ Erreur : `{str(e)}`", parse_mode="Markdown")
 
 @bot.message_handler(commands=['gmailstatus'])
 def gmail_status(message):
