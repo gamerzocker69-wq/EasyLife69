@@ -371,12 +371,11 @@ def weekly_recap(message):
 def connect_gmail(message):
     uid = message.from_user.id
     flow = make_flow()
-   auth_url, state = flow.authorization_url(
-    access_type='offline',
-    response_type='code',
-    include_granted_scopes='true',
-    prompt='consent'
-)
+    auth_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true',
+        prompt='consent'
+    )
     pending_oauth[state] = uid
     bot.reply_to(
         message,
