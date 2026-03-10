@@ -377,11 +377,13 @@ def connect_gmail(message):
         prompt='consent'
     )
     pending_oauth[state] = uid
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔗 Connecter mon Gmail", url=auth_url))
     bot.reply_to(
         message,
-        f"🔗 Clique sur ce lien pour connecter ton Gmail :\n\n{auth_url}\n\n"
-        f"_Une fois autorisé, reviens ici et t'es bon !_",
-        parse_mode="Markdown"
+        "Clique sur le bouton pour connecter ton Gmail ✅\n_Une fois autorisé, reviens ici !_",
+        parse_mode="Markdown",
+        reply_markup=markup
     )
 
 @bot.message_handler(commands=['gmailstatus'])
