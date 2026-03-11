@@ -89,7 +89,7 @@ def get_gmail_service(user_id):
     return build("gmail", "v1", credentials=creds)
 
 def make_flow():
-    return Flow.from_client_config(
+    flow = Flow.from_client_config(
         {
             "web": {
                 "client_id": GOOGLE_CLIENT_ID,
@@ -102,6 +102,8 @@ def make_flow():
         scopes=SCOPES,
         redirect_uri=GOOGLE_REDIRECT_URI
     )
+    flow.code_verifier = None
+    return flow
 
 pending_oauth = {}
 
