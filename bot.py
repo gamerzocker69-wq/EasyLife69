@@ -160,9 +160,14 @@ def send_welcome(message):
         "`/envoyer` — envoyer un mail (guidé)\n"
         "`/brouillon` — créer un brouillon (guidé)\n\n"
         "━━━ 📅 AGENDA ━━━\n"
-        "`/rendez-vous` — créer un event (guidé)\n"
+        "`/rdv` — créer un event (guidé)\n"
         "`/agenda` — voir les prochains events\n"
-        "`/gmailstatut` — vérifier la connexion\n"
+        "`/gmailstatut` — vérifier la connexion\n\n"
+        "━━━ 💰 BUDGET ━━━\n"
+        "`/depense` — logger une dépense (guidé)\n"
+        "`/revenu` — logger un revenu (guidé)\n"
+        "`/budget` — solde & récap du mois\n"
+        "`/budgetmois` — toutes les dépenses détaillées\n"
     )
     bot.reply_to(message, text, parse_mode="Markdown")
 
@@ -483,7 +488,7 @@ def creer_brouillon(message):
 # ─────────────────────────────────────────────
 # AGENDA — FLOW CONVERSATIONNEL
 # ─────────────────────────────────────────────
-@bot.message_handler(commands=['rendez'])
+@bot.message_handler(commands=['rdv'])
 def creer_rdv(message):
     if not get_calendar_service(message.from_user.id):
         bot.reply_to(message, "❌ Agenda pas connecté. Utilise `/connectergmail`.", parse_mode="Markdown")
@@ -565,6 +570,45 @@ def gerer_conversation(message):
         except Exception as e:
             bot.reply_to(message, f"❌ Erreur : `{str(e)}`", parse_mode="Markdown")
 
+    # ── FLOW BUDGET ──
+    elif etape == "budget_montant":
+        try:
+            montant = float(texte.replace(",", ".").replace("€", "").strip())
+            state["montant"] = montant
+            if state["type"] == "revenu":
+                # Pas besoin de catégorie pour un revenu
+                state["etape"] = "budget_description"
+                bot.reply_to(message, "💬 Description ? _(ex: Salaire mars — ou tape *skip*)_", parse_mode="Markdown")
+            else:
+                state["etape"] = "budget_categorie"
+                markup = types.InlineKeyboardMarkup(row_width=2)
+                boutons = [types.InlineKeyboardButton(label, callback_data=f"cat:{key}") for key, label in CATEGORIES_BUDGET.items()]
+                markup.add(*boutons)
+                bot.reply_to(message, f"💸 *{montant:.2f}€* — Quelle catégorie ?", parse_mode="Markdown", reply_markup=markup)
+        except:
+            bot.reply_to(message, "❌ Montant invalide. Essaie *45.50* ou *120*", parse_mode="Markdown")
+
+    elif etape == "budget_description":
+        description = "" if texte.lower() == "skip" else texte
+        del conversation_state[uid]
+        user, _ = get_user(uid)
+        if "budget" not in user:
+            user["budget"] = {"entrees": []}
+        user["budget"]["entrees"].append({
+            "type": state["type"],
+            "montant": state["montant"],
+            "categorie": state.get("categorie", "divers"),
+            "description": description,
+            "date": today(),
+            "mois": get_mois()
+        })
+        save_user(uid, user)
+        if state["type"] == "depense":
+            label = CATEGORIES_BUDGET.get(state.get("categorie", "divers"), "divers")
+            bot.reply_to(message, f"💸 Dépense de *{state['montant']:.2f}€* enregistrée\n{label}{f' — {description}' if description else ''} ✅", parse_mode="Markdown")
+        else:
+            bot.reply_to(message, f"💰 Revenu de *{state['montant']:.2f}€* enregistré{f' — {description}' if description else ''} ✅", parse_mode="Markdown")
+
     # ── FLOW RENDEZ-VOUS ──
     elif etape == "rdv_titre":
         state["titre"] = texte
@@ -636,6 +680,98 @@ def gerer_conversation(message):
 # ─────────────────────────────────────────────
 # FLASK ROUTES
 # ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# BUDGET
+# ─────────────────────────────────────────────
+CATEGORIES_BUDGET = {
+    "loyer": "🏠 Loyer",
+    "nourriture": "🛒 Nourriture",
+    "abonnements": "📺 Abonnements",
+    "energie": "⚡ Énergie",
+    "transports": "🚇 Transports",
+    "telephone": "📱 Téléphone",
+    "credit": "💳 Crédit",
+    "loisirs": "🎮 Loisirs",
+    "sante": "💊 Santé",
+    "shopping": "👕 Shopping",
+    "divers": "🔧 Divers"
+}
+
+def get_mois():
+    return datetime.date.today().strftime("%Y-%m")
+
+@bot.message_handler(commands=["depense"])
+def ajouter_depense(message):
+    conversation_state[message.from_user.id] = {"etape": "budget_montant", "type": "depense"}
+    bot.reply_to(message, "💸 *Nouvelle dépense*\n\nMontant ? _(ex: 45.50)_", parse_mode="Markdown")
+
+@bot.message_handler(commands=["revenu"])
+def ajouter_revenu(message):
+    conversation_state[message.from_user.id] = {"etape": "budget_montant", "type": "revenu"}
+    bot.reply_to(message, "💰 *Nouveau revenu*\n\nMontant ? _(ex: 2500)_", parse_mode="Markdown")
+
+@bot.message_handler(commands=["budget"])
+def voir_budget(message):
+    user, _ = get_user(message.from_user.id)
+    mois = get_mois()
+    budget = user.get("budget", {})
+    entrees = [e for e in budget.get("entrees", []) if e["mois"] == mois]
+    total_revenus = sum(e["montant"] for e in entrees if e["type"] == "revenu")
+    total_depenses = sum(e["montant"] for e in entrees if e["type"] == "depense")
+    solde = total_revenus - total_depenses
+    emoji_solde = "✅" if solde >= 0 else "🔴"
+    lines = [f"💰 *Budget — {mois}*\n"]
+    lines.append(f"📈 Revenus : *+{total_revenus:.2f}€*")
+    lines.append(f"📉 Dépenses : *-{total_depenses:.2f}€*")
+    lines.append(f"{emoji_solde} Solde : *{solde:+.2f}€*")
+    if total_depenses > 0:
+        lines.append("\n━━━ Par catégorie ━━━")
+        cats = {}
+        for e in entrees:
+            if e["type"] == "depense":
+                cat = e.get("categorie", "divers")
+                cats[cat] = cats.get(cat, 0) + e["montant"]
+        for cat, montant in sorted(cats.items(), key=lambda x: x[1], reverse=True):
+            label = CATEGORIES_BUDGET.get(cat, cat)
+            pct = (montant / total_depenses * 100) if total_depenses > 0 else 0
+            barre = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
+            lines.append(f"{label}\n`{barre}` {montant:.2f}€ ({pct:.0f}%)")
+    bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
+
+@bot.message_handler(commands=["budgetmois"])
+def detail_budget_mois(message):
+    user, _ = get_user(message.from_user.id)
+    mois = get_mois()
+    budget = user.get("budget", {})
+    entrees = [e for e in budget.get("entrees", []) if e["mois"] == mois and e["type"] == "depense"]
+    if not entrees:
+        bot.reply_to(message, "Aucune dépense ce mois-ci. Utilise `/depense` pour en ajouter.", parse_mode="Markdown")
+        return
+    lines = [f"📋 *Dépenses détaillées — {mois}*\n"]
+    for e in sorted(entrees, key=lambda x: x["date"], reverse=True)[:20]:
+        label = CATEGORIES_BUDGET.get(e.get("categorie", "divers"), e.get("categorie", "divers"))
+        desc = f" — {e['description']}" if e.get("description") else ""
+        lines.append(f"• {label} *{e['montant']:.2f}€*{desc} `{e['date']}`")
+    bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cat:"))
+def callback_categorie(call):
+    cat = call.data.split(":", 1)[1]
+    uid = call.from_user.id
+    if uid not in conversation_state:
+        bot.answer_callback_query(call.id, "Session expirée.")
+        return
+    state = conversation_state[uid]
+    state["categorie"] = cat
+    state["etape"] = "budget_description"
+    label = CATEGORIES_BUDGET.get(cat, cat)
+    bot.answer_callback_query(call.id, f"{label} sélectionné")
+    bot.edit_message_text(
+        f"Catégorie : {label} ✅\n\n💬 Description ? _(ex: Courses Lidl — ou tape *skip* pour passer)_",
+        call.message.chat.id, call.message.message_id, parse_mode="Markdown"
+    )
+
 @app.route('/', methods=['GET'])
 def index():
     return "Bot EasyLife — envoie /start dans Telegram !"
@@ -657,7 +793,7 @@ def oauth_callback():
             "refresh_token": creds.refresh_token,
             "scopes": list(creds.scopes) if creds.scopes else []
         })
-        bot.send_message(uid, "✅ Gmail & Google Agenda connectés ! Utilise `/envoyer`, `/brouillon` et `/rendez-vous`.", parse_mode="Markdown")
+        bot.send_message(uid, "✅ Gmail & Google Agenda connectés ! Utilise `/envoyer`, `/brouillon` et `/rdv`.", parse_mode="Markdown")
         return "<h2>✅ Connecté ! Retourne sur Telegram.</h2>"
     except Exception as e:
         return f"❌ Erreur OAuth : {str(e)}", 500
