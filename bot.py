@@ -376,7 +376,8 @@ def connect_gmail(message):
         auth_url, state = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true',
-            prompt='consent'
+            prompt='consent',
+            code_challenge_method=None
         )
         pending_oauth[state] = uid
         markup = types.InlineKeyboardMarkup()
@@ -463,7 +464,7 @@ def oauth_callback():
     uid = pending_oauth.pop(state)
     try:
         flow = make_flow()
-        flow.fetch_token(code=code)
+        flow.fetch_token(code=code, code_verifier=None)
         creds = flow.credentials
         save_tokens(uid, {
             "token": creds.token,
