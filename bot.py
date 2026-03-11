@@ -3,7 +3,7 @@ import json
 import datetime
 import base64
 from email.mime.text import MIMEText
-from flask import Flask, request, redirect
+from flask import Flask, request
 import telebot
 from telebot import types
 from google.oauth2.credentials import Credentials
@@ -42,7 +42,7 @@ def get_user(user_id):
     data = load_data()
     uid = str(user_id)
     if uid not in data:
-        data[uid] = {"habits": {}, "todos": [], "notes": [], "mood_log": []}
+        data[uid] = {"habitudes": {}, "taches": [], "notes": [], "humeur": []}
         save_data(data)
     return data[uid], data
 
@@ -58,7 +58,7 @@ def now():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 # ─────────────────────────────────────────────
-# GOOGLE OAUTH TOKENS
+# GOOGLE OAUTH
 # ─────────────────────────────────────────────
 def load_tokens():
     if os.path.exists(TOKENS_FILE):
@@ -108,270 +108,276 @@ def make_flow():
 pending_oauth = {}
 
 # ─────────────────────────────────────────────
-# /start /help
+# ÉTAT CONVERSATIONNEL (flow email/brouillon)
 # ─────────────────────────────────────────────
-@bot.message_handler(commands=['start', 'help'])
+# { user_id: { "etape": "destinataire"/"sujet"/"message", "type": "envoi"/"brouillon", "destinataire": "", "sujet": "" } }
+conversation_state = {}
+
+# ─────────────────────────────────────────────
+# /start /aide
+# ─────────────────────────────────────────────
+@bot.message_handler(commands=['start', 'aide'])
 def send_welcome(message):
     text = (
-        "👋 *Bot Productivité* — voilà ce que tu peux faire :\n\n"
+        "👋 *Bot EasyLife* — voilà ce que tu peux faire :\n\n"
         "━━━ ✅ HABITUDES ━━━\n"
-        "`/addhabit [nom]` — créer une habitude\n"
-        "`/done [nom]` — cocher une habitude aujourd'hui\n"
-        "`/habits` — voir tes habitudes & streaks\n"
-        "`/delhabit [nom]` — supprimer une habitude\n\n"
-        "━━━ 📋 TODO ━━━\n"
-        "`/addtodo [tâche]` — ajouter une tâche\n"
-        "`/listtodo` — voir les tâches\n"
-        "`/donetodo [numéro]` — cocher une tâche\n"
-        "`/cleartodo` — vider les tâches terminées\n\n"
+        "`/ajouterhabitude [nom]` — créer une habitude\n"
+        "`/fait [nom]` — cocher une habitude aujourd'hui\n"
+        "`/habitudes` — voir tes habitudes & streaks\n"
+        "`/supprimerhabitude [nom]` — supprimer une habitude\n\n"
+        "━━━ 📋 TÂCHES ━━━\n"
+        "`/ajoutertache [tâche]` — ajouter une tâche\n"
+        "`/taches` — voir les tâches\n"
+        "`/terminee [numéro]` — cocher une tâche\n"
+        "`/nettoyertaches` — vider les tâches terminées\n\n"
         "━━━ 📝 NOTES ━━━\n"
         "`/note [texte]` — sauvegarder une note rapide\n"
         "`/notes` — voir tes notes récentes\n\n"
         "━━━ 😊 HUMEUR ━━━\n"
-        "`/mood [1-5]` — logger ton humeur\n\n"
+        "`/humeur [1-5]` — logger ton humeur\n\n"
         "━━━ 📊 RÉCAPS ━━━\n"
         "`/recap` — récap du jour\n"
-        "`/week` — bilan de la semaine\n\n"
+        "`/semaine` — bilan de la semaine\n\n"
         "━━━ 📧 GMAIL ━━━\n"
-        "`/connectgmail` — connecter ton Gmail\n"
-        "`/send email | sujet | message` — envoyer un mail\n"
-        "`/draft email | sujet | message` — créer un brouillon\n"
-        "`/gmailstatus` — vérifier la connexion\n"
+        "`/connectergmail` — connecter ton Gmail\n"
+        "`/envoyer` — envoyer un mail (guidé)\n"
+        "`/brouillon` — créer un brouillon (guidé)\n"
+        "`/gmailstatut` — vérifier la connexion\n"
     )
     bot.reply_to(message, text, parse_mode="Markdown")
 
 # ─────────────────────────────────────────────
 # HABITUDES
 # ─────────────────────────────────────────────
-@bot.message_handler(commands=['addhabit'])
-def add_habit(message):
+@bot.message_handler(commands=['ajouterhabitude'])
+def ajouter_habitude(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(message, "❌ Usage : `/addhabit Sport`", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Usage : `/ajouterhabitude Sport`", parse_mode="Markdown")
         return
-    name = parts[1].strip().lower()
-    user, data = get_user(message.from_user.id)
-    if name in user["habits"]:
-        bot.reply_to(message, f"⚠️ L'habitude *{name}* existe déjà.", parse_mode="Markdown")
-        return
-    user["habits"][name] = {"streak": 0, "last_done": None, "history": []}
-    save_user(message.from_user.id, user)
-    bot.reply_to(message, f"✅ Habitude *{name}* ajoutée ! 💪", parse_mode="Markdown")
-
-@bot.message_handler(commands=['done'])
-def done_habit(message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "❌ Usage : `/done sport`", parse_mode="Markdown")
-        return
-    name = parts[1].strip().lower()
-    user, data = get_user(message.from_user.id)
-    if name not in user["habits"]:
-        bot.reply_to(message, f"❌ Habitude *{name}* introuvable.", parse_mode="Markdown")
-        return
-    habit = user["habits"][name]
-    t = today()
-    if habit["last_done"] == t:
-        bot.reply_to(message, f"✅ *{name}* déjà cochée aujourd'hui !", parse_mode="Markdown")
-        return
-    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-    habit["streak"] = (habit["streak"] + 1) if habit["last_done"] == yesterday else 1
-    habit["last_done"] = t
-    habit["history"].append(t)
-    save_user(message.from_user.id, user)
-    streak = habit["streak"]
-    emoji = "🔥" if streak >= 7 else "⚡" if streak >= 3 else "✅"
-    bot.reply_to(message, f"{emoji} *{name}* cochée ! Streak : *{streak} jour{'s' if streak > 1 else ''}*", parse_mode="Markdown")
-
-@bot.message_handler(commands=['habits'])
-def list_habits(message):
+    nom = parts[1].strip().lower()
     user, _ = get_user(message.from_user.id)
-    if not user["habits"]:
-        bot.reply_to(message, "Pas encore d'habitudes. Utilise `/addhabit [nom]`.", parse_mode="Markdown")
+    if nom in user["habitudes"]:
+        bot.reply_to(message, f"⚠️ L'habitude *{nom}* existe déjà.", parse_mode="Markdown")
+        return
+    user["habitudes"][nom] = {"streak": 0, "dernier_fait": None, "historique": []}
+    save_user(message.from_user.id, user)
+    bot.reply_to(message, f"✅ Habitude *{nom}* ajoutée ! Reviens la cocher chaque jour 💪", parse_mode="Markdown")
+
+@bot.message_handler(commands=['fait'])
+def fait_habitude(message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Usage : `/fait sport`", parse_mode="Markdown")
+        return
+    nom = parts[1].strip().lower()
+    user, _ = get_user(message.from_user.id)
+    if nom not in user["habitudes"]:
+        bot.reply_to(message, f"❌ Habitude *{nom}* introuvable. Utilise `/habitudes` pour voir la liste.", parse_mode="Markdown")
+        return
+    habitude = user["habitudes"][nom]
+    t = today()
+    if habitude["dernier_fait"] == t:
+        bot.reply_to(message, f"✅ *{nom}* déjà cochée aujourd'hui !", parse_mode="Markdown")
+        return
+    hier = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    habitude["streak"] = (habitude["streak"] + 1) if habitude["dernier_fait"] == hier else 1
+    habitude["dernier_fait"] = t
+    habitude["historique"].append(t)
+    save_user(message.from_user.id, user)
+    streak = habitude["streak"]
+    emoji = "🔥" if streak >= 7 else "⚡" if streak >= 3 else "✅"
+    bot.reply_to(message, f"{emoji} *{nom}* cochée ! Streak : *{streak} jour{'s' if streak > 1 else ''}*", parse_mode="Markdown")
+
+@bot.message_handler(commands=['habitudes'])
+def liste_habitudes(message):
+    user, _ = get_user(message.from_user.id)
+    if not user["habitudes"]:
+        bot.reply_to(message, "Pas encore d'habitudes. Utilise `/ajouterhabitude [nom]`.", parse_mode="Markdown")
         return
     t = today()
     lines = ["📋 *Tes habitudes :*\n"]
-    for name, h in user["habits"].items():
-        done_today = "✅" if h["last_done"] == t else "⬜"
+    for nom, h in user["habitudes"].items():
+        faite = "✅" if h["dernier_fait"] == t else "⬜"
         streak = h["streak"]
-        fire = " 🔥" if streak >= 7 else " ⚡" if streak >= 3 else ""
-        lines.append(f"{done_today} *{name}* — {streak}j de streak{fire}")
+        feu = " 🔥" if streak >= 7 else " ⚡" if streak >= 3 else ""
+        lines.append(f"{faite} *{nom}* — {streak}j de streak{feu}")
     bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
 
-@bot.message_handler(commands=['delhabit'])
-def del_habit(message):
+@bot.message_handler(commands=['supprimerhabitude'])
+def supprimer_habitude(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(message, "❌ Usage : `/delhabit sport`", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Usage : `/supprimerhabitude sport`", parse_mode="Markdown")
         return
-    name = parts[1].strip().lower()
+    nom = parts[1].strip().lower()
     user, _ = get_user(message.from_user.id)
-    if name not in user["habits"]:
-        bot.reply_to(message, f"❌ Habitude *{name}* introuvable.", parse_mode="Markdown")
+    if nom not in user["habitudes"]:
+        bot.reply_to(message, f"❌ Habitude *{nom}* introuvable.", parse_mode="Markdown")
         return
-    del user["habits"][name]
+    del user["habitudes"][nom]
     save_user(message.from_user.id, user)
-    bot.reply_to(message, f"🗑️ Habitude *{name}* supprimée.", parse_mode="Markdown")
+    bot.reply_to(message, f"🗑️ Habitude *{nom}* supprimée.", parse_mode="Markdown")
 
 # ─────────────────────────────────────────────
-# TODO
+# TÂCHES
 # ─────────────────────────────────────────────
-@bot.message_handler(commands=['addtodo'])
-def add_todo(message):
+@bot.message_handler(commands=['ajoutertache'])
+def ajouter_tache(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(message, "❌ Usage : `/addtodo Appeler le médecin`", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Usage : `/ajoutertache Appeler le médecin`", parse_mode="Markdown")
         return
     user, _ = get_user(message.from_user.id)
-    user["todos"].append({"task": parts[1].strip(), "done": False, "created": now()})
+    user["taches"].append({"tache": parts[1].strip(), "faite": False, "creee": now()})
     save_user(message.from_user.id, user)
     bot.reply_to(message, f"📌 Tâche ajoutée : *{parts[1].strip()}*", parse_mode="Markdown")
 
-@bot.message_handler(commands=['listtodo'])
-def list_todo(message):
+@bot.message_handler(commands=['taches'])
+def liste_taches(message):
     user, _ = get_user(message.from_user.id)
-    pending = [t for t in user["todos"] if not t["done"]]
-    if not pending:
-        bot.reply_to(message, "✅ Aucune tâche en cours !")
+    en_cours = [t for t in user["taches"] if not t["faite"]]
+    if not en_cours:
+        bot.reply_to(message, "✅ Aucune tâche en cours — t'es à jour !")
         return
     lines = ["📋 *Tes tâches :*\n"]
     i = 1
-    for t in user["todos"]:
-        if not t["done"]:
-            lines.append(f"{i}. ⬜ {t['task']}")
+    for t in user["taches"]:
+        if not t["faite"]:
+            lines.append(f"{i}. ⬜ {t['tache']}")
             i += 1
     bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
 
-@bot.message_handler(commands=['donetodo'])
-def done_todo(message):
+@bot.message_handler(commands=['terminee'])
+def terminer_tache(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().isdigit():
-        bot.reply_to(message, "❌ Usage : `/donetodo 2`", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Usage : `/terminee 2`", parse_mode="Markdown")
         return
     idx = int(parts[1].strip()) - 1
     user, _ = get_user(message.from_user.id)
-    pending = [t for t in user["todos"] if not t["done"]]
-    if idx < 0 or idx >= len(pending):
-        bot.reply_to(message, "❌ Numéro invalide.", parse_mode="Markdown")
+    en_cours = [t for t in user["taches"] if not t["faite"]]
+    if idx < 0 or idx >= len(en_cours):
+        bot.reply_to(message, "❌ Numéro invalide. Utilise `/taches` pour voir les numéros.", parse_mode="Markdown")
         return
-    task_name = pending[idx]["task"]
-    for t in user["todos"]:
-        if t["task"] == task_name and not t["done"]:
-            t["done"] = True
+    nom_tache = en_cours[idx]["tache"]
+    for t in user["taches"]:
+        if t["tache"] == nom_tache and not t["faite"]:
+            t["faite"] = True
             break
     save_user(message.from_user.id, user)
-    bot.reply_to(message, f"✅ *{task_name}* — terminée !", parse_mode="Markdown")
+    bot.reply_to(message, f"✅ *{nom_tache}* — terminée !", parse_mode="Markdown")
 
-@bot.message_handler(commands=['cleartodo'])
-def clear_todo(message):
+@bot.message_handler(commands=['nettoyertaches'])
+def nettoyer_taches(message):
     user, _ = get_user(message.from_user.id)
-    before = len(user["todos"])
-    user["todos"] = [t for t in user["todos"] if not t["done"]]
+    avant = len(user["taches"])
+    user["taches"] = [t for t in user["taches"] if not t["faite"]]
     save_user(message.from_user.id, user)
-    bot.reply_to(message, f"🧹 {before - len(user['todos'])} tâche(s) supprimée(s).")
+    bot.reply_to(message, f"🧹 {avant - len(user['taches'])} tâche(s) terminée(s) supprimée(s).")
 
 # ─────────────────────────────────────────────
 # NOTES
 # ─────────────────────────────────────────────
 @bot.message_handler(commands=['note'])
-def add_note(message):
+def ajouter_note(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         bot.reply_to(message, "❌ Usage : `/note mon idée`", parse_mode="Markdown")
         return
     user, _ = get_user(message.from_user.id)
-    user["notes"].append({"text": parts[1].strip(), "date": now()})
+    user["notes"].append({"texte": parts[1].strip(), "date": now()})
     save_user(message.from_user.id, user)
     bot.reply_to(message, "📝 Note sauvegardée ✅")
 
 @bot.message_handler(commands=['notes'])
-def list_notes(message):
+def liste_notes(message):
     user, _ = get_user(message.from_user.id)
-    recent = user["notes"][-10:][::-1]
-    if not recent:
+    recentes = user["notes"][-10:][::-1]
+    if not recentes:
         bot.reply_to(message, "Aucune note. Utilise `/note [texte]`.", parse_mode="Markdown")
         return
     lines = ["📝 *Tes 10 dernières notes :*\n"]
-    for n in recent:
-        lines.append(f"• `{n['date']}` — {n['text']}")
+    for n in recentes:
+        lines.append(f"• `{n['date']}` — {n['texte']}")
     bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
 
 # ─────────────────────────────────────────────
 # HUMEUR
 # ─────────────────────────────────────────────
-MOOD_EMOJIS = {1: "😞", 2: "😕", 3: "😐", 4: "😊", 5: "🤩"}
+HUMEUR_EMOJIS = {1: "😞", 2: "😕", 3: "😐", 4: "😊", 5: "🤩"}
 
-@bot.message_handler(commands=['mood'])
-def log_mood(message):
+@bot.message_handler(commands=['humeur'])
+def logger_humeur(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().isdigit():
-        bot.reply_to(message, "❌ Usage : `/mood 4` (entre 1 et 5)", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Usage : `/humeur 4` (entre 1 et 5)", parse_mode="Markdown")
         return
     score = int(parts[1].strip())
     if score < 1 or score > 5:
         bot.reply_to(message, "❌ Score entre 1 et 5.", parse_mode="Markdown")
         return
     user, _ = get_user(message.from_user.id)
-    user["mood_log"].append({"score": score, "date": today()})
+    user["humeur"].append({"score": score, "date": today()})
     save_user(message.from_user.id, user)
-    bot.reply_to(message, f"{MOOD_EMOJIS[score]} Humeur *{score}/5* enregistrée.", parse_mode="Markdown")
+    bot.reply_to(message, f"{HUMEUR_EMOJIS[score]} Humeur *{score}/5* enregistrée.", parse_mode="Markdown")
 
 # ─────────────────────────────────────────────
 # RÉCAPS
 # ─────────────────────────────────────────────
 @bot.message_handler(commands=['recap'])
-def daily_recap(message):
+def recap_jour(message):
     user, _ = get_user(message.from_user.id)
     t = today()
     lines = [f"📊 *Récap du {t}*\n"]
     lines.append("━━━ ✅ HABITUDES ━━━")
-    if user["habits"]:
-        for name, h in user["habits"].items():
-            status = "✅" if h["last_done"] == t else "❌"
-            lines.append(f"{status} {name} (streak {h['streak']}j)")
+    if user["habitudes"]:
+        for nom, h in user["habitudes"].items():
+            statut = "✅" if h["dernier_fait"] == t else "❌"
+            lines.append(f"{statut} {nom} (streak {h['streak']}j)")
     else:
         lines.append("_Aucune habitude configurée_")
-    lines.append("\n━━━ 📋 TODOS ━━━")
-    lines.append(f"✅ Terminées : {len([x for x in user['todos'] if x['done']])}  |  ⬜ Restantes : {len([x for x in user['todos'] if not x['done']])}")
+    lines.append("\n━━━ 📋 TÂCHES ━━━")
+    lines.append(f"✅ Terminées : {len([x for x in user['taches'] if x['faite']])}  |  ⬜ Restantes : {len([x for x in user['taches'] if not x['faite']])}")
     lines.append("\n━━━ 😊 HUMEUR ━━━")
-    today_mood = [m for m in user["mood_log"] if m["date"] == t]
-    if today_mood:
-        score = today_mood[-1]["score"]
-        lines.append(f"{MOOD_EMOJIS[score]} {score}/5")
+    humeur_today = [m for m in user["humeur"] if m["date"] == t]
+    if humeur_today:
+        score = humeur_today[-1]["score"]
+        lines.append(f"{HUMEUR_EMOJIS[score]} {score}/5")
     else:
-        lines.append("_Pas encore loggée — `/mood [1-5]`_")
+        lines.append("_Pas encore loggée — `/humeur [1-5]`_")
     bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
 
-@bot.message_handler(commands=['week'])
-def weekly_recap(message):
+@bot.message_handler(commands=['semaine'])
+def recap_semaine(message):
     user, _ = get_user(message.from_user.id)
     today_dt = datetime.date.today()
-    week_days = [(today_dt - datetime.timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
-    lines = [f"📅 *Bilan semaine ({week_days[0]} → {week_days[-1]})*\n"]
+    jours = [(today_dt - datetime.timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+    lines = [f"📅 *Bilan semaine ({jours[0]} → {jours[-1]})*\n"]
     lines.append("━━━ ✅ HABITUDES ━━━")
-    if user["habits"]:
-        for name, h in user["habits"].items():
-            days_done = sum(1 for d in week_days if d in h["history"])
-            bar = "".join(["🟩" if d in h["history"] else "⬜" for d in week_days])
-            lines.append(f"*{name}* : {days_done}/7  {bar}")
+    if user["habitudes"]:
+        for nom, h in user["habitudes"].items():
+            jours_faits = sum(1 for d in jours if d in h["historique"])
+            barre = "".join(["🟩" if d in h["historique"] else "⬜" for d in jours])
+            lines.append(f"*{nom}* : {jours_faits}/7  {barre}")
     else:
         lines.append("_Aucune habitude configurée_")
-    lines.append("\n━━━ 📋 TODOS ━━━")
-    lines.append(f"✅ {len([x for x in user['todos'] if x['done']])} terminée(s) | ⬜ {len([x for x in user['todos'] if not x['done']])} en cours")
+    lines.append("\n━━━ 📋 TÂCHES ━━━")
+    lines.append(f"✅ {len([x for x in user['taches'] if x['faite']])} terminée(s) | ⬜ {len([x for x in user['taches'] if not x['faite']])} en cours")
     lines.append("\n━━━ 😊 HUMEUR MOYENNE ━━━")
-    week_moods = [m["score"] for m in user["mood_log"] if m["date"] in week_days]
-    if week_moods:
-        avg = sum(week_moods) / len(week_moods)
-        lines.append(f"Moyenne : *{avg:.1f}/5* sur {len(week_moods)} jour(s) {MOOD_EMOJIS[round(avg)]}")
+    humeurs = [m["score"] for m in user["humeur"] if m["date"] in jours]
+    if humeurs:
+        moy = sum(humeurs) / len(humeurs)
+        lines.append(f"Moyenne : *{moy:.1f}/5* sur {len(humeurs)} jour(s) {HUMEUR_EMOJIS[round(moy)]}")
     else:
         lines.append("_Aucune humeur loggée cette semaine_")
     bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
 
 # ─────────────────────────────────────────────
-# GMAIL — CONNEXION OAUTH
+# GMAIL — CONNEXION
 # ─────────────────────────────────────────────
-@bot.message_handler(commands=['connectgmail'])
-def connect_gmail(message):
+@bot.message_handler(commands=['connectergmail'])
+def connecter_gmail(message):
     try:
         uid = message.from_user.id
         flow = make_flow()
@@ -392,69 +398,92 @@ def connect_gmail(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Erreur : `{str(e)}`", parse_mode="Markdown")
 
-@bot.message_handler(commands=['gmailstatus'])
-def gmail_status(message):
+@bot.message_handler(commands=['gmailstatut'])
+def gmail_statut(message):
     tokens = load_tokens()
     uid = str(message.from_user.id)
     if uid in tokens:
         bot.reply_to(message, "✅ Gmail connecté et opérationnel !")
     else:
-        bot.reply_to(message, "❌ Gmail pas connecté. Utilise `/connectgmail`.", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Gmail pas connecté. Utilise `/connectergmail`.", parse_mode="Markdown")
 
 # ─────────────────────────────────────────────
-# GMAIL — ENVOYER UN MAIL
+# GMAIL — FLOW CONVERSATIONNEL ENVOYER
 # ─────────────────────────────────────────────
-@bot.message_handler(commands=['send'])
-def send_email(message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or parts[1].count('|') < 2:
-        bot.reply_to(message, "❌ Usage : `/send email@exemple.com | Sujet | Corps du message`", parse_mode="Markdown")
-        return
+@bot.message_handler(commands=['envoyer'])
+def envoyer_mail(message):
     service = get_gmail_service(message.from_user.id)
     if not service:
-        bot.reply_to(message, "❌ Gmail pas connecté. Utilise `/connectgmail` d'abord.", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Gmail pas connecté. Utilise `/connectergmail` d'abord.", parse_mode="Markdown")
         return
-    to, subject, body = [x.strip() for x in parts[1].split('|', 2)]
-    try:
-        mime = MIMEText(body)
-        mime['to'] = to
-        mime['subject'] = subject
-        raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
-        service.users().messages().send(userId='me', body={'raw': raw}).execute()
-        bot.reply_to(message, f"📧 Mail envoyé à *{to}* ✅", parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Erreur lors de l'envoi : `{str(e)}`", parse_mode="Markdown")
+    conversation_state[message.from_user.id] = {"etape": "destinataire", "type": "envoi"}
+    bot.reply_to(message, "📧 *Envoyer un mail*\n\nÀ qui ? _(adresse email)_", parse_mode="Markdown")
+
+@bot.message_handler(commands=['brouillon'])
+def creer_brouillon(message):
+    service = get_gmail_service(message.from_user.id)
+    if not service:
+        bot.reply_to(message, "❌ Gmail pas connecté. Utilise `/connectergmail` d'abord.", parse_mode="Markdown")
+        return
+    conversation_state[message.from_user.id] = {"etape": "destinataire", "type": "brouillon"}
+    bot.reply_to(message, "📝 *Créer un brouillon*\n\nÀ qui ? _(adresse email)_", parse_mode="Markdown")
 
 # ─────────────────────────────────────────────
-# GMAIL — CRÉER UN BROUILLON
+# GESTIONNAIRE CONVERSATIONNEL
 # ─────────────────────────────────────────────
-@bot.message_handler(commands=['draft'])
-def create_draft(message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or parts[1].count('|') < 2:
-        bot.reply_to(message, "❌ Usage : `/draft email@exemple.com | Sujet | Corps du message`", parse_mode="Markdown")
-        return
-    service = get_gmail_service(message.from_user.id)
-    if not service:
-        bot.reply_to(message, "❌ Gmail pas connecté. Utilise `/connectgmail` d'abord.", parse_mode="Markdown")
-        return
-    to, subject, body = [x.strip() for x in parts[1].split('|', 2)]
-    try:
-        mime = MIMEText(body)
-        mime['to'] = to
-        mime['subject'] = subject
-        raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
-        service.users().drafts().create(userId='me', body={'message': {'raw': raw}}).execute()
-        bot.reply_to(message, f"📝 Brouillon créé pour *{to}* — sujet : *{subject}* ✅", parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Erreur : `{str(e)}`", parse_mode="Markdown")
+@bot.message_handler(func=lambda m: m.from_user.id in conversation_state and not m.text.startswith('/'))
+def gerer_conversation(message):
+    uid = message.from_user.id
+    state = conversation_state[uid]
+    etape = state["etape"]
+    texte = message.text.strip()
+
+    if etape == "destinataire":
+        state["destinataire"] = texte
+        state["etape"] = "sujet"
+        bot.reply_to(message, "✏️ Quel est le *sujet* du mail ?", parse_mode="Markdown")
+
+    elif etape == "sujet":
+        state["sujet"] = texte
+        state["etape"] = "message"
+        bot.reply_to(message, "💬 Écris ton *message* :", parse_mode="Markdown")
+
+    elif etape == "message":
+        state["message"] = texte
+        del conversation_state[uid]
+
+        destinataire = state["destinataire"]
+        sujet = state["sujet"]
+        corps = state["message"]
+        type_action = state["type"]
+
+        service = get_gmail_service(uid)
+        if not service:
+            bot.reply_to(message, "❌ Gmail déconnecté. Utilise `/connectergmail`.", parse_mode="Markdown")
+            return
+
+        try:
+            mime = MIMEText(corps)
+            mime['to'] = destinataire
+            mime['subject'] = sujet
+            raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
+
+            if type_action == "envoi":
+                service.users().messages().send(userId='me', body={'raw': raw}).execute()
+                bot.reply_to(message, f"📧 Mail envoyé à *{destinataire}* ✅", parse_mode="Markdown")
+            else:
+                service.users().drafts().create(userId='me', body={'message': {'raw': raw}}).execute()
+                bot.reply_to(message, f"📝 Brouillon créé pour *{destinataire}* ✅\nSujet : *{sujet}*", parse_mode="Markdown")
+
+        except Exception as e:
+            bot.reply_to(message, f"❌ Erreur : `{str(e)}`", parse_mode="Markdown")
 
 # ─────────────────────────────────────────────
 # FLASK ROUTES
 # ─────────────────────────────────────────────
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot webhook ready — envoie /start dans Telegram !"
+    return "Bot EasyLife — envoie /start dans Telegram !"
 
 @app.route('/oauth/callback', methods=['GET'])
 def oauth_callback():
@@ -466,7 +495,6 @@ def oauth_callback():
     try:
         flow = make_flow()
         flow.state = state
-        os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '0'
         flow.fetch_token(code=code)
         creds = flow.credentials
         save_tokens(uid, {
@@ -474,7 +502,7 @@ def oauth_callback():
             "refresh_token": creds.refresh_token,
             "scopes": list(creds.scopes) if creds.scopes else []
         })
-        bot.send_message(uid, "✅ Gmail connecté ! Tu peux utiliser `/send` et `/draft`.", parse_mode="Markdown")
+        bot.send_message(uid, "✅ Gmail connecté ! Tu peux utiliser `/envoyer` et `/brouillon`.", parse_mode="Markdown")
         return "<h2>✅ Gmail connecté ! Retourne sur Telegram.</h2>"
     except Exception as e:
         return f"❌ Erreur OAuth : {str(e)}", 500
